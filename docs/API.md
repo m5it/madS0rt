@@ -4,6 +4,7 @@
 
 - [Core Sorter](#core-sorter)
 - [Adaptive Sorter](#adaptive-sorter)
+- [GPU Acceleration](#gpu-acceleration)
 - [Extractors](#extractors)
 - [Bucket Management](#bucket-management)
 - [Hash Utilities](#hash-utilities)
@@ -14,10 +15,6 @@
 
 ### `MadSorter`
 
-Main sorting engine implementing the hybrid bucket-radix sort algorithm.
-
-#### Constructor
-
 ```python
 MadSorter(
     prefix_length: int = 3,
@@ -25,7 +22,9 @@ MadSorter(
     key_func: Optional[Callable[[Any], Any]] = None,
     strategy: Optional[SortStrategy] = None,
     max_bucket_size: Optional[int] = None,
-    copy_mode: bool = False
+    copy_mode: bool = False,
+    use_gpu: bool = False,
+    gpu_threshold: int = 10000,
 )
 ```
 
@@ -39,6 +38,25 @@ MadSorter(
 | `strategy` | SortStrategy | None | Algorithm selection strategy |
 | `max_bucket_size` | int | None | Auto-split buckets larger than this |
 | `copy_mode` | bool | False | If True, return new list; if False, sort in-place |
+| `use_gpu` | bool | False | Enable GPU acceleration for large numeric buckets |
+| `gpu_threshold` | int | 10000 | Minimum bucket size to use GPU (numeric data only) |
+
+**GPU Acceleration:**
+
+When `use_gpu=True`, MadSorter will automatically use GPU acceleration for large numeric buckets (> `gpu_threshold` items). This requires CuPy and a CUDA-capable GPU.
+
+```python
+# Enable GPU acceleration
+sorter = MadSorter(
+    use_gpu=True,
+    gpu_threshold=10000  # Only use GPU for buckets > 10K items
+)
+```
+
+**GPU Requirements:**
+- CuPy installed (`pip install cupy-cuda11x` or `cupy-cuda12x`)
+- CUDA-capable GPU
+- Numeric data types only (int, float)
 
 #### Methods
 
@@ -75,7 +93,11 @@ Get timing and performance statistics.
     'sort_time_ms': float,
     'merge_time_ms': float,
     'total_time_ms': float,
-    'bucket_stats': Dict
+    'bucket_stats': Dict,
+    'gpu_enabled': bool,
+    'gpu_available': bool,
+    'gpu_buckets_sorted': int,
+    'cpu_buckets_sorted': int,
 }
 ```
 
@@ -150,14 +172,60 @@ Get a human-readable report of optimization decisions.
 sorter = AdaptiveMadSorter(auto_adjust=True)
 sorter.sort(large_dataset)
 print(sorter.get_adaptive_report())
-# Adaptive Sorting Report:
-# =========================
-# 
-# Sort #1:
-#   Items: 100000
-#   Prefix length: 3
-#   Distribution: uniform
-#   Optimal length detected: 3
+```
+
+---
+
+## GPU Acceleration
+
+### `GPUBackend`
+
+High-level interface for GPU-accelerated sorting.
+
+#### Constructor
+
+```python
+GPUBackend(
+    min_bucket_size: int = 10000,
+    device_id: int = 0
+)
+```
+
+#### Methods
+
+##### `is_available() -> bool`
+
+Check if GPU backend is available.
+
+##### `should_use_gpu(data: List[Any]) -> bool`
+
+Determine if GPU should be used for this data.
+
+##### `sort(data: List[Any], reverse: bool = False, key_func: Optional[Callable] = None) -> List[Any]`
+
+Sort data using GPU or CPU fallback.
+
+### `gpu_sort(data, reverse=False, min_size=10000)`
+
+One-shot GPU sort with automatic fallback.
+
+```python
+from madsort import gpu_sort
+
+result = gpu_sort(large_numeric_list, min_size=10000)
+```
+
+### `gpu_available() -> bool`
+
+Check if GPU acceleration is available.
+
+```python
+from madsort import gpu_available
+
+if gpu_available():
+    print("GPU ready!")
+else:
+    print("Install CuPy for GPU support")
 ```
 
 ---
@@ -180,12 +248,6 @@ FirstNCharsExtractor(
 )
 ```
 
-**Example:**
-```python
-extractor = FirstNCharsExtractor(n=4, lowercase=True)
-extractor("HELLO")  # "hell"
-```
-
 ### `NumericExtractor`
 
 Extract numeric values from strings.
@@ -201,11 +263,31 @@ NumericExtractor(
 )
 ```
 
+### `PathExtractor`
+
+Extract values using deep path access like 'user.profile.name'.
+
+```python
+PathExtractor(
+    path: Union[str, List[str]],
+    separator: str = ".",
+    default: Any = None
+)
+```
+
 **Example:**
 ```python
-ext = NumericExtractor()
-ext("item_123")      # 123
-ext("price_12.99")   # 12 (or 12.99 with allow_decimal=True)
+from madsort import PathExtractor
+
+# Dot notation
+extractor = PathExtractor("user.profile.name")
+data = {"user": {"profile": {"name": "Alice"}}}
+extractor.extract(data)  # "Alice"
+
+# Object attributes
+extractor = PathExtractor("address.city")
+person = Person(Address("Boston"))
+extractor.extract(person)  # "Boston"
 ```
 
 ### `RegexExtractor`
@@ -223,17 +305,6 @@ RegexExtractor(
 )
 ```
 
-**Example:**
-```python
-# Extract date
-date_ext = RegexExtractor(r'(\d{4}-\d{2}-\d{2})', group=1)
-date_ext("Event: 2024-03-15")  # "2024-03-15"
-
-# Extract with transform
-num_ext = RegexExtractor(r'(\d+)', transform=int)
-num_ext("abc123")  # 123 (as int, not str)
-```
-
 ### `MultiFieldExtractor`
 
 Combine multiple fields from dictionaries or objects.
@@ -245,17 +316,6 @@ MultiFieldExtractor(
     missing: str = "_",
     extractor: Optional[BaseExtractor] = None
 )
-```
-
-**Example:**
-```python
-extractor = MultiFieldExtractor(
-    fields=['category', 'priority', 'name'],
-    separator='-'
-)
-
-data = {'category': 'A', 'priority': '1', 'name': 'task'}
-extractor(data)  # "A-1-task"
 ```
 
 ### `CompositeKeyExtractor`
@@ -326,24 +386,6 @@ BucketManager(
 )
 ```
 
-#### Methods
-
-##### `distribute(items: List[Any]) -> Dict[int, Bucket]`
-
-Distribute items into buckets based on prefix hash.
-
-##### `add(item: Any) -> int`
-
-Add single item to appropriate bucket.
-
-##### `get_all_items(sorted_buckets: bool = False) -> List[Any]`
-
-Retrieve all items from all buckets.
-
-##### `get_stats() -> Dict[str, Any]`
-
-Get bucket statistics.
-
 ---
 
 ## Hash Utilities
@@ -360,40 +402,29 @@ Compute xxHash (faster alternative for large datasets).
 
 Factory function for hash providers.
 
-**Example:**
-```python
-from madsort import get_hash_provider
-
-# CRC32 (default)
-crc32 = get_hash_provider("crc32")
-
-# xxHash 64-bit
-xxh64 = get_hash_provider("xxhash64")
-```
-
 ---
 
 ## Convenience Functions
 
-### `madsort(items, key=None, reverse=False, prefix_length=3, copy=True)`
+### `madsort(items, key=None, reverse=False, prefix_length=3, copy=True, use_gpu=False, gpu_threshold=10000)`
 
-One-shot sorting function.
+One-shot sorting function with optional GPU.
 
 ```python
 from madsort import madsort
 
-# Like list.sort() but with madS0rt algorithm
-madsort(my_list, key=len, reverse=True, copy=False)
+# With GPU acceleration
+madsort(large_numeric_list, use_gpu=True, gpu_threshold=10000)
 ```
 
-### `madsorted(items, key=None, reverse=False, prefix_length=3)`
+### `madsorted(items, key=None, reverse=False, prefix_length=3, use_gpu=False, gpu_threshold=10000)`
 
 Always returns new sorted list.
 
 ```python
 from madsort import madsorted
 
-result = madsorted(words, key=str.lower)
+result = madsorted(large_list, use_gpu=True)
 ```
 
 ---
@@ -408,9 +439,9 @@ Create extractors by type name.
 from madsort import make_extractor
 
 # Available types: 'prefix', 'suffix', 'regex', 'numeric', 
-#                  'multi_field', 'composite'
+#                  'path', 'multi_field', 'composite'
 
-extractor = make_extractor('prefix', n=4)
+extractor = make_extractor('path', path='user.name')
 ```
 
 ### Preset Extractors

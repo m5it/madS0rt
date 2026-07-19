@@ -1,14 +1,30 @@
 """
 Main sorting engine for madS0rt.
 Orchestrates bucket creation, adaptive intra-bucket sorting, and k-way merge.
+Now with optional GPU acceleration for large numeric buckets.
 """
 
 from typing import List, Callable, Optional, Any, Dict, Union, Literal
 import heapq
 import bisect
+import logging
 
 from .bucket import Bucket, BucketManager
 from .hash_utils import HashProvider, get_hash_provider
+
+# Optional GPU support
+try:
+    from .gpu_backend import (
+        gpu_available,
+        is_gpu_sortable,
+        gpu_sort_bucket_safe,
+        GPUBackend,
+    )
+    _GPU_SUPPORT = True
+except ImportError:
+    _GPU_SUPPORT = False
+
+logger = logging.getLogger(__name__)
 
 
 class SortStrategy:
@@ -57,6 +73,7 @@ class MadSorter:
     """
     Main sorting engine for madS0rt.
     Implements hybrid bucket-based sorting with adaptive strategies.
+    Now with optional GPU acceleration for large numeric buckets.
     """
     
     def __init__(
@@ -66,7 +83,9 @@ class MadSorter:
         key_func: Optional[Callable[[Any], Any]] = None,
         strategy: Optional[SortStrategy] = None,
         max_bucket_size: Optional[int] = None,
-        copy_mode: bool = False
+        copy_mode: bool = False,
+        use_gpu: bool = False,
+        gpu_threshold: int = 10000,
     ):
         """
         Initialize MadSorter.
@@ -78,12 +97,16 @@ class MadSorter:
             strategy: SortStrategy configuration (uses default if None)
             max_bucket_size: Auto-split buckets larger than this
             copy_mode: If True, don't modify original list (return new sorted list)
+            use_gpu: If True, enable GPU acceleration for large numeric buckets
+            gpu_threshold: Minimum bucket size to use GPU (default: 10000)
         """
         self.prefix_length = prefix_length
         self.key_func = key_func or (lambda x: x)
         self.strategy = strategy or SortStrategy()
         self.max_bucket_size = max_bucket_size
         self.copy_mode = copy_mode
+        self.use_gpu = use_gpu
+        self.gpu_threshold = gpu_threshold
         
         # Initialize hash provider
         if isinstance(hash_provider, str):
@@ -93,6 +116,15 @@ class MadSorter:
         else:
             self.hash_provider = hash_provider
         
+        # Initialize GPU backend if requested
+        self._gpu_backend = None
+        if use_gpu and _GPU_SUPPORT:
+            if gpu_available():
+                self._gpu_backend = GPUBackend(min_bucket_size=gpu_threshold)
+                logger.info(f"GPU acceleration enabled (threshold: {gpu_threshold})")
+            else:
+                logger.warning("GPU requested but not available, using CPU only")
+        
         self._bucket_manager: Optional[BucketManager] = None
         self._stats = {
             'total_items': 0,
@@ -100,6 +132,8 @@ class MadSorter:
             'sort_time_ms': 0,
             'merge_time_ms': 0,
             'total_time_ms': 0,
+            'gpu_buckets_sorted': 0,
+            'cpu_buckets_sorted': 0,
         }
     
     def _create_bucket_manager(self) -> BucketManager:
@@ -116,24 +150,81 @@ class MadSorter:
         key = self.key_func(item)
         return str(key) if key is not None else ""
     
+    def _should_use_gpu(self, bucket: Bucket) -> bool:
+        """
+        Determine if GPU should be used for this bucket.
+        
+        Args:
+            bucket: Bucket to check
+        
+        Returns:
+            True if GPU should be used.
+        """
+        if not self.use_gpu or self._gpu_backend is None:
+            return False
+        
+        if len(bucket) < self.gpu_threshold:
+            return False
+        
+        # Check if data is GPU-sortable (numeric, homogeneous)
+        return is_gpu_sortable(bucket.items, self.gpu_threshold)
+    
     def _adaptive_sort_bucket(self, bucket: Bucket, reverse: bool = False) -> None:
         """
-        Sort bucket using adaptive strategy based on size.
+        Sort bucket using adaptive strategy based on size and type.
+        Routes to GPU for large numeric buckets if enabled.
         
         Args:
             bucket: Bucket to sort
             reverse: Sort in descending order
         """
         size = len(bucket)
+        
+        # Check if we should use GPU
+        if self._should_use_gpu(bucket):
+            try:
+                self._gpu_sort_bucket(bucket, reverse)
+                self._stats['gpu_buckets_sorted'] += 1
+                return
+            except Exception as e:
+                logger.warning(f"GPU sort failed: {e}, falling back to CPU")
+                # Continue with CPU sort
+        
+        # CPU-based sorting
         algorithm = self.strategy.select_algorithm(size)
         
         if algorithm == 'insertion':
             self._insertion_sort(bucket, reverse)
         else:
-            # Use Python's Timsort (highly optimized)
+            # Use Python's Timsort
             bucket.sort(reverse=reverse, key=self.key_func)
         
-        # Mark as sorted
+        bucket._sorted = True
+        self._stats['cpu_buckets_sorted'] += 1
+    
+    def _gpu_sort_bucket(self, bucket: Bucket, reverse: bool = False) -> None:
+        """
+        Sort bucket using GPU acceleration.
+        
+        Args:
+            bucket: Bucket to sort
+            reverse: Sort in descending order
+        
+        Raises:
+            RuntimeError: If GPU sort fails.
+        """
+        if self._gpu_backend is None:
+            raise RuntimeError("GPU backend not available")
+        
+        # Sort on GPU
+        sorted_items = self._gpu_backend.sort(
+            bucket.items,
+            reverse=reverse,
+            key_func=self.key_func
+        )
+        
+        # Replace bucket contents
+        bucket.items = sorted_items
         bucket._sorted = True
     
     def _insertion_sort(self, bucket: Bucket, reverse: bool = False) -> None:
@@ -168,7 +259,6 @@ class MadSorter:
     def _k_way_merge(self, buckets: List[Bucket], reverse: bool = False) -> List[Any]:
         """
         Merge multiple sorted buckets using k-way merge with heap.
-        More efficient than sequential merging for many buckets.
         
         Args:
             buckets: List of sorted buckets
@@ -183,14 +273,9 @@ class MadSorter:
         if len(buckets) == 1:
             return list(buckets[0].items)
         
-        # Use heapq.merge for efficient k-way merge
         key_func = self.key_func
-        
-        # Create iterators for each bucket
         iterators = [iter(bucket.items) for bucket in buckets]
         
-        # Use heapq.merge which implements efficient k-way merge
-        # It yields items in sorted order without loading everything into memory
         merged = heapq.merge(
             *iterators,
             key=key_func,
@@ -199,41 +284,13 @@ class MadSorter:
         
         return list(merged)
     
-    def _sequential_merge(self, buckets: List[Bucket], reverse: bool = False) -> List[Any]:
-        """
-        Alternative: Sequential merge (simpler, less memory overhead for few buckets).
-        
-        Args:
-            buckets: List of sorted buckets
-            reverse: Merge in descending order
-        
-        Returns:
-            Merged sorted list
-        """
-        result = []
-        key_func = self.key_func
-        
-        for bucket in buckets:
-            items = list(bucket.items)
-            if reverse:
-                items.reverse()
-            
-            # Merge into result maintaining sorted order
-            for item in items:
-                # Find insertion point using binary search
-                key_val = key_func(item)
-                pos = bisect.bisect_right([key_func(x) for x in result], key_val)
-                result.insert(pos, item)
-        
-        return result
-    
     def sort(self, items: List[Any], reverse: bool = False) -> List[Any]:
         """
-        Sort items using madS0rt hybrid algorithm.
+        Sort items using madS0rt hybrid algorithm with optional GPU acceleration.
         
         Algorithm:
         1. Distribute items into prefix-based buckets
-        2. Sort each bucket with adaptive strategy
+        2. Sort each bucket (CPU or GPU based on size/type)
         3. Merge sorted buckets using k-way merge
         
         Args:
@@ -275,7 +332,6 @@ class MadSorter:
         # Phase 3: Merge buckets
         merge_start = time.perf_counter()
         
-        # Use k-way merge for efficiency
         result = self._k_way_merge(bucket_list, reverse)
         
         merge_end = time.perf_counter()
@@ -299,13 +355,6 @@ class MadSorter:
         """
         Return new sorted list (like built-in sorted()).
         Always returns new list, never modifies original.
-        
-        Args:
-            items: List of items to sort
-            reverse: Sort in descending order
-        
-        Returns:
-            New sorted list
         """
         original_mode = self.copy_mode
         self.copy_mode = True
@@ -315,7 +364,7 @@ class MadSorter:
             self.copy_mode = original_mode
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get sorting statistics."""
+        """Get sorting statistics including GPU/CPU breakdown."""
         if self._bucket_manager:
             bucket_stats = self._bucket_manager.get_stats()
         else:
@@ -324,6 +373,8 @@ class MadSorter:
         return {
             **self._stats,
             'bucket_stats': bucket_stats,
+            'gpu_enabled': self.use_gpu,
+            'gpu_available': self._gpu_backend is not None,
         }
     
     def get_buckets(self) -> Dict[int, Bucket]:
@@ -341,6 +392,8 @@ class MadSorter:
             'sort_time_ms': 0,
             'merge_time_ms': 0,
             'total_time_ms': 0,
+            'gpu_buckets_sorted': 0,
+            'cpu_buckets_sorted': 0,
         }
 
 
@@ -350,7 +403,9 @@ def madsort(
     key: Optional[Callable] = None,
     reverse: bool = False,
     prefix_length: int = 3,
-    copy: bool = True
+    copy: bool = True,
+    use_gpu: bool = False,
+    gpu_threshold: int = 10000,
 ) -> List[Any]:
     """
     Convenience function for one-time madS0rt sorting.
@@ -361,6 +416,8 @@ def madsort(
         reverse: Descending order
         prefix_length: Prefix length for bucketing
         copy: If True, return new list; if False, sort in-place
+        use_gpu: Enable GPU acceleration
+        gpu_threshold: Min bucket size for GPU
     
     Returns:
         Sorted list
@@ -368,7 +425,9 @@ def madsort(
     sorter = MadSorter(
         prefix_length=prefix_length,
         key_func=key,
-        copy_mode=copy
+        copy_mode=copy,
+        use_gpu=use_gpu,
+        gpu_threshold=gpu_threshold,
     )
     return sorter.sort(items, reverse)
 
@@ -377,7 +436,9 @@ def madsorted(
     items: List[Any],
     key: Optional[Callable] = None,
     reverse: bool = False,
-    prefix_length: int = 3
+    prefix_length: int = 3,
+    use_gpu: bool = False,
+    gpu_threshold: int = 10000,
 ) -> List[Any]:
     """
     Like built-in sorted() - always returns new sorted list.
@@ -387,8 +448,10 @@ def madsorted(
         key: Key extraction function
         reverse: Descending order
         prefix_length: Prefix length for bucketing
+        use_gpu: Enable GPU acceleration
+        gpu_threshold: Min bucket size for GPU
     
     Returns:
         New sorted list
     """
-    return madsort(items, key, reverse, prefix_length, copy=True)
+    return madsort(items, key, reverse, prefix_length, copy=True, use_gpu=use_gpu, gpu_threshold=gpu_threshold)

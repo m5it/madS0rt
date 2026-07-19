@@ -12,11 +12,6 @@ from .extractors import (
     BaseExtractor,
     FirstNCharsExtractor,
     LastNCharsExtractor,
-
-from .extractors import (
-    BaseExtractor,
-    FirstNCharsExtractor,
-    LastNCharsExtractor,
     CustomRegexExtractor,
     NumericExtractor,
     PathExtractor,
@@ -31,18 +26,29 @@ from .extractors import (
     make_version_extractor,
     make_date_extractor,
 )
+from .sorter import MadSorter, SortStrategy, madsort, madsorted
+from .adaptive import (
+    DistributionAnalyzer,
     LoadBalancer,
     AdaptiveBucketManager,
     AdaptiveMadSorter,
 )
+from .gpu_backend import (
+    gpu_available,
+    GPUBackend,
+    gpu_sort,
+)
 
 __all__ = [
+    # Core
     'Bucket',
     'BucketManager',
+    # Hash
     'crc32_hash',
     'xxhash_hash',
     'HashProvider',
     'get_hash_provider',
+    # Extractors
     'BaseExtractor',
     'FirstNCharsExtractor',
     'LastNCharsExtractor',
@@ -55,25 +61,23 @@ __all__ = [
     'ChainExtractor',
     'PrefixExtractor',
     'RegexExtractor',
+    # Factories
     'make_extractor',
     'make_filename_extractor',
     'make_version_extractor',
     'make_date_extractor',
+    # Sorter
     'MadSorter',
     'SortStrategy',
     'madsort',
     'madsorted',
+    # Adaptive
     'DistributionAnalyzer',
     'LoadBalancer',
     'AdaptiveBucketManager',
     'AdaptiveMadSorter',
-]
-    'MadSorter',
-    'SortStrategy',
-    'madsort',
-    'madsorted',
-    'DistributionAnalyzer',
-    'LoadBalancer',
-    'AdaptiveBucketManager',
-    'AdaptiveMadSorter',
+    # GPU
+    'gpu_available',
+    'GPUBackend',
+    'gpu_sort',
 ]
