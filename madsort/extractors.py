@@ -37,17 +37,6 @@ class FirstNCharsExtractor(BaseExtractor):
         pad_length: Optional[int] = None,
         from_end: bool = False
     ):
-        """
-        Initialize FirstNCharsExtractor.
-        
-        Args:
-            n: Number of characters to extract
-            lowercase: Convert to lowercase
-            normalize: Remove accents using unidecode
-            pad: Character to pad with if string shorter than n
-            pad_length: Total length after padding (defaults to n)
-            from_end: Extract from end instead of beginning
-        """
         self.n = n
         self.lowercase = lowercase
         self.normalize = normalize
@@ -56,29 +45,23 @@ class FirstNCharsExtractor(BaseExtractor):
         self.from_end = from_end
     
     def extract(self, item: Any) -> str:
-        """Extract first N characters."""
         key = self._to_string(item)
-        
         if self.lowercase:
             key = key.lower()
-        
         if self.normalize:
             key = self._normalize(key)
         
-        # Extract substring
         if self.from_end:
             result = key[-self.n:] if len(key) >= self.n else key
         else:
             result = key[:self.n] if len(key) >= self.n else key
         
-        # Pad if necessary
         if self.pad and len(result) < self.pad_length:
             result = result + (self.pad * (self.pad_length - len(result)))
         
         return result
     
     def _to_string(self, item: Any) -> str:
-        """Convert item to string."""
         if isinstance(item, str):
             return item
         elif hasattr(item, '__str__'):
@@ -87,22 +70,14 @@ class FirstNCharsExtractor(BaseExtractor):
             return repr(item)
     
     def _normalize(self, s: str) -> str:
-        """Normalize string by removing accents."""
         try:
             from unidecode import unidecode
             return unidecode(s)
         except ImportError:
             return s
-    
-    def set_n(self, n: int) -> 'FirstNCharsExtractor':
-        """Chainable method to update N."""
-        self.n = n
-        return self
 
 
 class LastNCharsExtractor(BaseExtractor):
-    """Extracts last N characters (useful for file extensions, suffixes)."""
-    
     def __init__(self, n: int = 3, **kwargs):
         super().__init__()
         self._extractor = FirstNCharsExtractor(n=n, from_end=True, **kwargs)
@@ -112,11 +87,6 @@ class LastNCharsExtractor(BaseExtractor):
 
 
 class CustomRegexExtractor(BaseExtractor):
-    """
-    Extracts key using regex pattern matching.
-    Supports multiple match groups and custom transformations.
-    """
-    
     def __init__(
         self,
         pattern: Union[str, Pattern],
@@ -126,17 +96,6 @@ class CustomRegexExtractor(BaseExtractor):
         multiple: bool = False,
         separator: str = "|"
     ):
-        """
-        Initialize CustomRegexExtractor.
-        
-        Args:
-            pattern: Regex pattern string or compiled pattern
-            group: Capture group index or name to return
-            fallback: Value to return if no match
-            transform: Optional function to transform match result
-            multiple: If True, return all matches joined by separator
-            separator: Separator for multiple matches
-        """
         self.pattern = re.compile(pattern) if isinstance(pattern, str) else pattern
         self.group = group
         self.fallback = fallback
@@ -145,22 +104,17 @@ class CustomRegexExtractor(BaseExtractor):
         self.separator = separator
     
     def extract(self, item: Any) -> Union[str, List[str], Any]:
-        """Extract using regex pattern."""
         text = str(item)
-        
         if self.multiple:
             matches = self.pattern.findall(text)
             if not matches:
                 return self.fallback
-            
-            # Handle tuple matches from named groups
             processed = []
             for m in matches:
                 if isinstance(m, tuple):
                     processed.append(m[0] if m else "")
                 else:
                     processed.append(str(m))
-            
             result = self.separator.join(processed)
         else:
             match = self.pattern.search(text)
@@ -179,11 +133,6 @@ class CustomRegexExtractor(BaseExtractor):
 
 
 class NumericExtractor(BaseExtractor):
-    """
-    Extracts numeric values from strings or objects.
-    Supports integers, floats, and custom number formats.
-    """
-    
     def __init__(
         self,
         pattern: Optional[str] = None,
@@ -193,21 +142,9 @@ class NumericExtractor(BaseExtractor):
         allow_negative: bool = True,
         allow_decimal: bool = True
     ):
-        """
-        Initialize NumericExtractor.
-        
-        Args:
-            pattern: Custom regex pattern (default: auto-detect numbers)
-            group: Capture group containing the number
-            as_type: Convert to int or float
-            default: Default value if no number found
-            allow_negative: Include minus sign
-            allow_decimal: Include decimal point
-        """
         if pattern:
             self.pattern = re.compile(pattern)
         else:
-            # Build pattern based on options
             sign = r"-?" if allow_negative else r""
             decimal = r"(?:\.\d+)?" if allow_decimal else r""
             self.pattern = re.compile(rf".*?({sign}\d+{decimal})")
@@ -217,24 +154,107 @@ class NumericExtractor(BaseExtractor):
         self.default = default
     
     def extract(self, item: Any) -> Union[int, float]:
-        """Extract numeric value."""
         text = str(item)
         match = self.pattern.search(text)
-        
         if match:
             try:
                 num_str = match.group(self.group)
                 return self.as_type(num_str)
             except (ValueError, IndexError):
                 pass
-        
         return self.default
+
+
+class PathExtractor(BaseExtractor):
+    """
+    Extracts values using deep path access like 'user.profile.name' 
+    or ['user']['profile']['name'] for nested objects and dicts.
+    """
+    
+    def __init__(
+        self,
+        path: Union[str, List[str]],
+        separator: str = ".",
+        default: Any = None
+    ):
+        """
+        Initialize PathExtractor.
+        
+        Args:
+            path: Dot-separated string or list of keys for deep access
+            separator: Separator for path string (default: '.')
+            default: Default value if path not found
+        """
+        if isinstance(path, str):
+            self.path_parts = path.split(separator)
+        else:
+            self.path_parts = list(path)
+        self.separator = separator
+        self.default = default
+    
+    def extract(self, item: Any) -> Any:
+        """
+        Extract value at path from item.
+        Supports both dict access (data['key']) and attribute access (obj.attr).
+        """
+        current = item
+        for part in self.path_parts:
+            if current is None:
+                return self.default
+            
+            # Try dict access first
+            if isinstance(current, dict):
+                if part in current:
+                    current = current[part]
+                else:
+                    return self.default
+            # Then try attribute access
+            elif hasattr(current, part):
+                current = getattr(current, part)
+            else:
+                return self.default
+        
+        return current
+    
+    def __repr__(self) -> str:
+        return f"PathExtractor({'/'.join(self.path_parts)})"
+
+
+class FieldExtractor(BaseExtractor):
+    """
+    Extracts field from dict or object attribute.
+    Enhanced to support nested paths like 'user.profile.name'.
+    """
+    
+    def __init__(
+        self,
+        field: str,
+        default: str = "",
+        separator: str = "."
+    ):
+        """
+        Initialize FieldExtractor.
+        
+        Args:
+            field: Field name or nested path (e.g., 'user.name' or 'name')
+            default: Default value if field not found
+            separator: Path separator for nested access (default: '.')
+        """
+        self.field = field
+        self.default = default
+        self.separator = separator
+        self._path_extractor = PathExtractor(field, separator, default)
+    
+    def extract(self, item: Any) -> str:
+        """Extract field from item using path."""
+        result = self._path_extractor.extract(item)
+        return str(result) if result is not None else self.default
 
 
 class MultiFieldExtractor(BaseExtractor):
     """
     Extracts and combines multiple fields from dicts or objects.
-    Supports different extraction strategies per field.
+    Enhanced to support nested paths.
     """
     
     def __init__(
@@ -244,19 +264,10 @@ class MultiFieldExtractor(BaseExtractor):
         missing: str = "_",
         extractor: Optional[BaseExtractor] = None
     ):
-        """
-        Initialize MultiFieldExtractor.
-        
-        Args:
-            fields: List of field names or (name, extractor) tuples
-            separator: String to join field values
-            missing: Value for missing fields
-            extractor: Default extractor to apply to each field
-        """
         self.fields = fields
         self.separator = separator
         self.missing = missing
-        self.default_extractor = extractor or FirstNCharsExtractor(n=100, normalize=False)
+        self.default_extractor = extractor or FieldExtractor(field="", default=missing)
     
     def extract(self, item: Any) -> str:
         """Extract multiple fields and combine."""
@@ -268,36 +279,31 @@ class MultiFieldExtractor(BaseExtractor):
             else:
                 field_name, extractor = field_spec, self.default_extractor
             
-            value = self._get_field(item, field_name)
-            if value is None:
-                parts.append(self.missing)
+            # Use FieldExtractor for string paths, otherwise use as-is
+            if isinstance(field_name, str) and isinstance(extractor, FieldExtractor):
+                value = extractor.extract(item)
+            elif isinstance(extractor, PathExtractor):
+                value = str(extractor.extract(item))
             else:
-                extracted = extractor.extract(value) if hasattr(extractor, 'extract') else extractor(value)
-                parts.append(str(extracted))
+                # Try direct access first
+                value = self._get_field(item, field_name)
+                if value is not None and hasattr(extractor, 'extract'):
+                    extracted = extractor.extract(value)
+                    value = str(extracted) if extracted is not None else self.missing
+                elif value is None:
+                    value = self.missing
+            
+            parts.append(str(value))
         
         return self.separator.join(parts)
     
     def _get_field(self, item: Any, field: str) -> Any:
-        """Get field value from dict or object."""
-        if isinstance(item, dict):
-            return item.get(field)
-        elif hasattr(item, field):
-            return getattr(item, field)
-        else:
-            # Try nested attribute access (e.g., "user.name")
-            parts = field.split('.')
-            current = item
-            for part in parts:
-                if hasattr(current, part):
-                    current = getattr(current, part)
-                elif isinstance(current, dict) and part in current:
-                    current = current[part]
-                else:
-                    return None
-            return current
+        """Get field value using PathExtractor."""
+        path_ext = PathExtractor(field, self.separator, None)
+        return path_ext.extract(item)
     
     def extract_tuple(self, item: Any) -> Tuple:
-        """Extract as tuple instead of joined string (for multi-key sorting)."""
+        """Extract as tuple for multi-key sorting."""
         parts = []
         
         for field_spec in self.fields:
@@ -306,34 +312,26 @@ class MultiFieldExtractor(BaseExtractor):
             else:
                 field_name, extractor = field_spec, self.default_extractor
             
-            value = self._get_field(item, field_name)
-            if value is None:
-                parts.append(self.missing)
+            if isinstance(extractor, (FieldExtractor, PathExtractor)):
+                value = extractor.extract(item)
             else:
-                extracted = extractor.extract(value) if hasattr(extractor, 'extract') else extractor(value)
-                parts.append(extracted)
+                value = self._get_field(item, field_name)
+                if value is not None and hasattr(extractor, 'extract'):
+                    value = extractor.extract(value)
+            
+            parts.append(value if value is not None else self.missing)
         
         return tuple(parts)
 
 
 class CompositeKeyExtractor(BaseExtractor):
-    """
-    Creates composite keys for multi-level sorting.
-    Returns tuple for use with Python's tuple comparison.
-    """
+    """Creates composite keys for multi-level sorting."""
     
     def __init__(
         self,
         extractors: List[BaseExtractor],
         priorities: Optional[List[int]] = None
     ):
-        """
-        Initialize CompositeKeyExtractor.
-        
-        Args:
-            extractors: List of extractors to combine
-            priorities: Optional priority weights for each extractor
-        """
         self.extractors = extractors
         self.priorities = priorities or list(range(len(extractors)))
     
@@ -347,22 +345,13 @@ class CompositeKeyExtractor(BaseExtractor):
 
 
 class ConditionalExtractor(BaseExtractor):
-    """
-    Applies different extractors based on conditions.
-    """
+    """Applies different extractors based on conditions."""
     
     def __init__(
         self,
         conditions: List[Tuple[Callable[[Any], bool], BaseExtractor]],
         default: Optional[BaseExtractor] = None
     ):
-        """
-        Initialize ConditionalExtractor.
-        
-        Args:
-            conditions: List of (predicate, extractor) tuples
-            default: Extractor to use if no condition matches
-        """
         self.conditions = conditions
         self.default = default or FirstNCharsExtractor(n=3)
     
@@ -375,9 +364,7 @@ class ConditionalExtractor(BaseExtractor):
 
 
 class ChainExtractor(BaseExtractor):
-    """
-    Chains multiple extractors (output of one is input to next).
-    """
+    """Chains multiple extractors (output of one is input to next)."""
     
     def __init__(self, extractors: List[BaseExtractor]):
         self.extractors = extractors
@@ -395,24 +382,16 @@ PrefixExtractor = FirstNCharsExtractor
 RegexExtractor = CustomRegexExtractor
 
 
-# Factory functions for common use cases
+# Factory functions
 def make_extractor(type_name: str, **kwargs) -> BaseExtractor:
-    """
-    Factory function to create extractors by type name.
-    
-    Args:
-        type_name: One of 'prefix', 'suffix', 'regex', 'numeric', 
-                   'multi_field', 'composite', 'conditional', 'chain'
-        **kwargs: Constructor arguments for the extractor
-    
-    Returns:
-        Configured extractor instance
-    """
+    """Factory function to create extractors by type name."""
     extractors = {
         'prefix': FirstNCharsExtractor,
         'suffix': LastNCharsExtractor,
         'regex': CustomRegexExtractor,
         'numeric': NumericExtractor,
+        'path': PathExtractor,
+        'field': FieldExtractor,
         'multi_field': MultiFieldExtractor,
         'composite': CompositeKeyExtractor,
         'conditional': ConditionalExtractor,
@@ -427,7 +406,7 @@ def make_extractor(type_name: str, **kwargs) -> BaseExtractor:
 
 # Convenience presets
 def make_filename_extractor() -> MultiFieldExtractor:
-    """Extractor optimized for filename sorting (name + extension)."""
+    """Extractor optimized for filename sorting."""
     return MultiFieldExtractor(
         fields=[
             ('name', CustomRegexExtractor(r'^(.*?)(?:\.[^.]+)?$', group=1)),
@@ -438,15 +417,15 @@ def make_filename_extractor() -> MultiFieldExtractor:
 
 
 def make_version_extractor() -> CompositeKeyExtractor:
-    """Extractor for version strings (e.g., 1.2.3 -> (1, 2, 3))."""
+    """Extractor for version strings."""
     return CompositeKeyExtractor([
         NumericExtractor(pattern=r'(\d+)', group=1, default=0)
-        for _ in range(4)  # Support up to 4 version components
+        for _ in range(4)
     ])
 
 
 def make_date_extractor(pattern: str = r'(\d{4})-(\d{2})-(\d{2})') -> CompositeKeyExtractor:
-    """Extractor for dates (year, month, day)."""
+    """Extractor for dates."""
     return CompositeKeyExtractor([
         NumericExtractor(pattern=pattern, group=i, default=0)
         for i in range(1, 4)

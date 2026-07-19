@@ -12,8 +12,14 @@ from .extractors import (
     BaseExtractor,
     FirstNCharsExtractor,
     LastNCharsExtractor,
+
+from .extractors import (
+    BaseExtractor,
+    FirstNCharsExtractor,
+    LastNCharsExtractor,
     CustomRegexExtractor,
     NumericExtractor,
+    PathExtractor,
     MultiFieldExtractor,
     CompositeKeyExtractor,
     ConditionalExtractor,
@@ -25,9 +31,6 @@ from .extractors import (
     make_version_extractor,
     make_date_extractor,
 )
-from .sorter import MadSorter, SortStrategy, madsort, madsorted
-from .adaptive import (
-    DistributionAnalyzer,
     LoadBalancer,
     AdaptiveBucketManager,
     AdaptiveMadSorter,
@@ -45,6 +48,7 @@ __all__ = [
     'LastNCharsExtractor',
     'CustomRegexExtractor',
     'NumericExtractor',
+    'PathExtractor',
     'MultiFieldExtractor',
     'CompositeKeyExtractor',
     'ConditionalExtractor',
@@ -55,6 +59,15 @@ __all__ = [
     'make_filename_extractor',
     'make_version_extractor',
     'make_date_extractor',
+    'MadSorter',
+    'SortStrategy',
+    'madsort',
+    'madsorted',
+    'DistributionAnalyzer',
+    'LoadBalancer',
+    'AdaptiveBucketManager',
+    'AdaptiveMadSorter',
+]
     'MadSorter',
     'SortStrategy',
     'madsort',

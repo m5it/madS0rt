@@ -194,6 +194,121 @@ composite = CompositeKeyExtractor([
 
 ## Performance Tuning
 
+### Sorting Complex Nested Objects
+
+madS0rt can sort complex nested structures including objects with attributes, dictionaries with nested values, and mixed data types.
+
+#### Sorting by Nested Dictionary Values
+
+```python
+from madsort import MadSorter
+
+# API responses with nested data
+api_responses = [
+    {"user": {"profile": {"name": "Charlie", "age": 30}}},
+    {"user": {"profile": {"name": "Alice", "age": 25}}},
+    {"user": {"profile": {"name": "Bob", "age": 35}}},
+]
+
+# Sort by nested value: data['user']['profile']['name']
+sorter = MadSorter(key_func=lambda x: x["user"]["profile"]["name"])
+result = sorter.sort(api_responses.copy())
+# [{'user': {'profile': {'name': 'Alice', ...}}}, ...]
+```
+
+#### Sorting Objects with Nested Attributes
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Address:
+    city: str
+    country: str
+
+@dataclass
+class Person:
+    name: str
+    address: Address
+
+people = [
+    Person("Alice", Address("Boston", "USA")),
+    Person("Bob", Address("Atlanta", "USA")),
+    Person("Charlie", Address("Chicago", "USA")),
+]
+
+# Sort by nested attribute: person.address.city
+sorter = MadSorter(key_func=lambda p: p.address.city)
+result = sorter.sort(people.copy())
+# [Person("Bob", ...), Person("Alice", ...), Person("Charlie", ...)]
+```
+
+#### Sorting by Computed Properties
+
+```python
+# E-commerce products with nested pricing
+products = [
+    {"name": "Laptop", "pricing": {"base": 1000, "discount": 0.1}},
+    {"name": "Phone", "pricing": {"base": 500, "discount": 0.2}},
+    {"name": "Tablet", "pricing": {"base": 800, "discount": 0.0}},
+]
+
+# Sort by computed final price
+def get_final_price(product):
+    base = product["pricing"]["base"]
+    discount = product["pricing"]["discount"]
+    return base * (1 - discount)
+
+sorter = MadSorter(key_func=get_final_price)
+result = sorter.sort(products.copy())
+# Phone ($400), Tablet ($800), Laptop ($900)
+```
+
+#### Multi-Level Nested Sorting with CompositeKeyExtractor
+
+```python
+from madsort import CompositeKeyExtractor
+
+# Complex data with multiple sort criteria
+orders = [
+    {"status": "pending", "priority": 2, "customer": {"tier": "gold"}},
+    {"status": "pending", "priority": 1, "customer": {"tier": "silver"}},
+    {"status": "completed", "priority": 3, "customer": {"tier": "gold"}},
+]
+
+# Sort by status, then priority, then customer tier
+composite = CompositeKeyExtractor([
+    lambda x: x["status"],
+    lambda x: x["priority"],
+    lambda x: x["customer"]["tier"]
+])
+
+sorter = MadSorter(key_func=composite)
+result = sorter.sort(orders.copy())
+```
+
+#### Using PathExtractor for Deep Access
+
+```python
+from madsort import PathExtractor
+
+# Deep nested data
+logs = [
+    {"meta": {"service": {"name": "api", "latency": 100}}},
+    {"meta": {"service": {"name": "db", "latency": 50}}},
+]
+
+# Extract nested value with path
+extractor = PathExtractor("meta.service.latency")
+sorter = MadSorter(key_func=extractor.extract)
+result = sorter.sort(logs.copy())
+```
+
+See `examples/complex_objects.py` for more comprehensive examples including:
+- Database-like records with nested fields
+- JSON-like nested dictionaries
+- Parent-child relationships (org charts)
+- Real-world log entry sorting
 ### Choose Right Prefix Length
 
 | Data Type | Recommended Prefix | Why |
